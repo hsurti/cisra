@@ -1,0 +1,219 @@
+heat_template_version: 2013-05-23
+
+description: This template deploys 2 Servers behind a Load Balancer
+
+parameters:
+  image:
+    type: string
+    description: Image used for servers
+    default: CentOS-7
+  key:
+    type: string
+    description: SSH key to connect to the servers
+    default: ccscloud 
+  flavor:
+    type: string
+    description: flavor used by the web servers
+    default: Micro-Small
+  public_network:
+    type: string
+    label: Public network name or ID
+    description: Public network with floating IP addresses.
+    default: public-floating-601
+  
+
+resources:
+  network:
+    type: lib/private_network.yaml
+    properties:
+      public_network: { get_param: public_network }
+
+  load_balancer:
+    type: lib/load_balancer.yaml
+    properties:
+      #public_network: { get_param: public_network }
+      private_subnet: {get_attr: [network, private_subnet_id]}
+      
+#-------------  Web Server ---------------------------------
+
+  apache_servergroup:
+    type: OS::Nova::ServerGroup
+    properties:
+      policies: ['affinity']
+      #policies: ['anti-affinity'] 
+
+
+  
+
+  apacheserver_Autoscaling_group:
+    type: OS::Heat::AutoScalingGroup
+    properties:
+      min_size: 1
+      max_size: 3
+      
+      resource:
+          type: lib/CISWebServer.yaml
+          properties:
+            image: { get_param: image }
+            flavor: { get_param: flavor }
+            key: { get_param: key }
+            pool_id: {get_attr: [load_balancer, pool_resource]}
+            private_network: { get_attr: [network, name] }
+            servergroup_id: {get_resource: apache_servergroup}
+            metadata: {"metering.stack": {get_param: "OS::stack_id"}}
+
+        
+  apacheserver_scaleup_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: apacheserver_Autoscaling_group}
+      cooldown: 60
+      scaling_adjustment: 1
+  
+  apacheserver_scaledown_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: apacheserver_Autoscaling_group}
+      cooldown: 60
+      scaling_adjustment: -1
+  
+  cpu_alarm_high:
+    type: OS::Ceilometer::Alarm
+    properties:
+      description: Scale-up if the average CPU > 25%
+      meter_name: cpu_util
+      statistic: max
+      period: 120
+      evaluation_periods: 1
+      threshold: 25
+      alarm_actions:
+        - {get_attr: [apacheserver_scaleup_policy, alarm_url]}
+      matching_metadata: {'metadata.user_metadata.stack': {get_param: "OS::stack_id"}}
+      comparison_operator: gt
+  
+  cpu_alarm_low:
+    type: OS::Ceilometer::Alarm
+    properties:
+      description: Scale-down if the average CPU < 25% 
+      meter_name: cpu_util
+      statistic: min
+      period: 120
+      evaluation_periods: 1
+      threshold: 20
+      alarm_actions:
+        - {get_attr: [apacheserver_scaledown_policy, alarm_url]}
+      matching_metadata: {'metadata.user_metadata.stack': {get_param: "OS::stack_id"}}
+      comparison_operator: lt    
+
+#-------------  App Server ---------------------------------
+
+  wildfly_servergroup:
+    type: OS::Nova::ServerGroup
+    properties:
+      policies: ['affinity']
+      #policies: ['anti-affinity'] 
+
+
+  
+
+  wildflyserver_Autoscaling_group:
+    type: OS::Heat::AutoScalingGroup
+    properties:
+      min_size: 1
+      max_size: 3
+      
+      resource:
+          type: lib/CISAppServer.yaml
+          properties:
+            image: { get_param: image }
+            flavor: { get_param: flavor }
+            key: { get_param: key }
+            private_network: { get_attr: [network, name] }
+            servergroup_id: {get_resource: wildfly_servergroup}
+            metadata: {"metering.stack": {get_param: "OS::stack_id"}}
+
+        
+  wildflyserver_scaleup_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: wildflyserver_Autoscaling_group}
+      cooldown: 60
+      scaling_adjustment: 1
+  
+  wildflyserver_scaledown_policy:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: wildflyserver_Autoscaling_group}
+      cooldown: 60
+      scaling_adjustment: -1
+  
+  cpu_alarm_high:
+    type: OS::Ceilometer::Alarm
+    properties:
+      description: Scale-up if the average CPU > 25%
+      meter_name: cpu_util
+      statistic: max
+      period: 120
+      evaluation_periods: 1
+      threshold: 25
+      alarm_actions:
+        - {get_attr: [wildflyserver_scaleup_policy, alarm_url]}
+      matching_metadata: {'metadata.user_metadata.stack': {get_param: "OS::stack_id"}}
+      comparison_operator: gt
+  
+  cpu_alarm_low:
+    type: OS::Ceilometer::Alarm
+    properties:
+      description: Scale-down if the average CPU < 25% 
+      meter_name: cpu_util
+      statistic: min
+      period: 120
+      evaluation_periods: 1
+      threshold: 20
+      alarm_actions:
+        - {get_attr: [wildflyserver_scaledown_policy, alarm_url]}
+      matching_metadata: {'metadata.user_metadata.stack': {get_param: "OS::stack_id"}}
+      comparison_operator: lt
+
+#-------------  DB Server ---------------------------------
+
+
+  mysql_server:
+    type: lib/CISDBServer.yaml
+    properties:
+      image: { get_param: image }
+      flavor: { get_param: flavor }
+      key: { get_param: key }
+      private_network: { get_attr: [network, name] }
+
+        
+#------------------- Jump host-----------------------------
+
+  jump_host:
+    type: lib/CISJumpHost.yaml
+    properties:
+      image: { get_param: image }
+      flavor: { get_param: flavor }
+      key: { get_param: key }
+      private_network: { get_attr: [network, name] }
+      public_network: { get_param: public_network}
+      
+
+
+
+outputs:
+  lb_vip:
+    description: The IP address of load_balancer
+    value: {get_attr: [load_balancer, floating_ip]}
+
+  
+   
+
+
+
+
+
