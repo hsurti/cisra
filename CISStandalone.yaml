@@ -1,0 +1,123 @@
+heat_template_version: 2013-05-23
+
+description: This template deploys a simple standalone server with floating IP
+
+parameters:
+  image:
+    type: string
+    description: Image used for servers
+    default: CentOS-7
+  key:
+    type: string
+    description: SSH key to connect to the servers
+    default: ccscloud
+  flavor:
+    type: string
+    description: flavor used by the standalone servers
+    default: Micro-Small
+  public_network:
+    type: string
+    label: Public network name or ID
+    description: Public network with floating IP addresses.
+    default: public-floating-601
+  
+
+resources:
+
+  standalone_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: standalone_security_group
+      rules:
+        - protocol: icmp
+        - protocol: tcp
+          port_range_min: 22
+          port_range_max: 22
+        - protocol: tcp
+          port_range_min: 443
+          port_range_max: 443
+        - protocol: tcp
+          port_range_min: 80
+          port_range_max: 80
+        - protocol: tcp
+          port_range_min: 3306
+          port_range_max: 3306
+
+  private_network:
+    type: OS::Neutron::Net
+
+  private_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: private_network }
+      cidr: 10.10.10.0/24
+      dns_nameservers:
+        - 8.8.8.8
+
+  router:
+    type: OS::Neutron::Router
+    properties:
+      external_gateway_info:
+        network: { get_param: public_network }
+
+  router-interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet: { get_resource: private_subnet }
+
+  standalone_port:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_resource: private_network }
+      security_groups:
+        - { get_resource: standalone_security_group }
+
+  standalone_instance:
+    type: OS::Nova::Server
+    properties:
+      image: { get_param: image }
+      flavor: { get_param: flavor }
+      key_name: { get_param: key }
+      networks:
+        - port: { get_resource: standalone_port }
+      user_data_format: RAW
+      user_data: |
+            #!/bin/bash
+            sudo rpm -Uvh http://dev.mysql.com/get/mysql-community-release-el7-5.noarch.rpm
+            sudo yum install mysql-server -y
+            sudo /sbin/service mysqld start
+            #sudo /usr/bin/mysql_secure_installation
+            #sudo yum install mariadb-server mariadb
+            sudo iptables -I INPUT -p tcp --dport 3306 -m state --state NEW,ESTABLISHED -j ACCEPT
+            sudo iptables -I OUTPUT -p tcp --sport 3306 -m state --state ESTABLISHED -j ACCEPT
+            mysqladmin -u root password rootpwd
+            cat << EOF | mysql -u root --password=rootpwd
+            CREATE DATABASE cis;
+            create user 'cisuser'@'localhost' identified by 'cispwd';
+            grant all privileges on *.* to 'cisuser'@'localhost';
+            grant all privileges on *.* to 'cisuser'@'%' identified by 'cispwd';
+            grant all privileges on *.* to 'cisuser'@'%' with grant option;
+            commit;
+            FLUSH PRIVILEGES;
+            EXIT
+            EOF
+                    
+  floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network: { get_param: public_network }
+
+  floating_ip_assoc:
+    type: OS::Neutron::FloatingIPAssociation
+    properties:
+      floatingip_id: { get_resource: floating_ip }
+      port_id: { get_resource: standalone_port }
+
+outputs:
+  instance_name:
+    description: Name of the instance
+    value: { get_attr: [standalone_instance, name] }
+  instance_ip:
+    description: The IP address of the deployed instance
+    value: { get_attr: [floating_ip, floating_ip_address] }
