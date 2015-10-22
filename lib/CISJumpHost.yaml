@@ -68,8 +68,10 @@ resources:
       user_data: |
        #cloud-config 
        password: cloud123
-
-
+       
+       template: |
+       #!/bin/bash
+       sudo yum install mysql -y
 
   floating_ip:
     type: OS::Neutron::FloatingIP
